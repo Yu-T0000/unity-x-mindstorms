@@ -57,6 +57,23 @@ class activate_motor:
         stdout.buffer.write(message)
         wait(15)
 
+    def button_check(self,address: bytes):
+        angle = (self.motor.angle() + 180) % 360 - 180
+        message = ustruct.pack('!10s6s', address, b"push")
+        if angle > -17:
+            self.is_push = True
+        if angle < -18:
+            if self.is_push:
+                stdout.buffer.write(message)
+                self.is_push = False
+            self.motor.run_target(500, 2, Stop.COAST, False)
+    
+    def button_control(self, cmd):
+        if cmd == b"hld":
+            self.motor.run_target(500, 1, Stop.HOLD, False)
+        elif cmd == b"psh":
+            self.motor.run_target(500, -15, Stop.COAST, False)
+
 class activate_Csensor:
     #カラーセンサ
     message = ""
@@ -98,12 +115,14 @@ class activate_Csensor:
         stdout.buffer.write(message)
         wait(15)
 
-#あとで他の機能も足しておく
+#使うモーター、センサーの指定
 
 hub = InventorHub()
 motorA = activate_motor("A")
 motorB = activate_motor("B")
 sensor = activate_Csensor("C")
+
+#ここまで
 
 
 # Optional: Register stdin for polling. This allows
@@ -113,11 +132,13 @@ keyboard.register(stdin)
 
 while True:
 
-    # Optional: Check available input.
+    
     while not keyboard.poll(0):
+        #ここで送りたいデータを宣言
         motorA.mesure_360(b"/add")
         motorB.mesure_360(b"/add2")
         sensor.send_color(b"/add3")
+        #ここまで
         
 
     # Read bytes.
@@ -129,12 +150,12 @@ while True:
         #stdout.buffer.write(bytearray(e, encode = 'utf-8'))
         stdout.buffer.write(b'The program was stopped')
 
-    # Decide what to do based on the command
+    # どのモーターにどんな動きをさせるか宣言
     if port == b"A":
         motorA.running(cmd, spd)
     elif port == b"B":
         motorB.running(cmd, spd)
-    
+    # ここまで
 
     if cmd == b"bye":
         break
