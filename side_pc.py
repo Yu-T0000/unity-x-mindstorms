@@ -1,23 +1,23 @@
 import sys
+import socket
 import asyncio
 from bleak import BleakScanner, BleakClient
 import argparse
 from typing import List,Any
-from contextlib import suppress
 from pythonosc import dispatcher
 from pythonosc.osc_server import AsyncIOOSCUDPServer
 from pythonosc.udp_client import SimpleUDPClient
 from struct import *
 
 #oscメッセージを送る先のサーバーとポート
-ip = "127.0.0.1"
+ip = socket.gethostbyname(socket.gethostname())
 port = 9000
 oscclient = SimpleUDPClient(ip, port)
 
 #このサーバーのipとポート
 parser = argparse.ArgumentParser()
 parser.add_argument("--ip",
-default="127.0.0.1", help="The ip to listen on")
+default=ip, help="The ip to listen on")
 parser.add_argument("--port",
 type=int, default=9067, help="The port to listen on")
 args = parser.parse_args()
@@ -29,6 +29,7 @@ HUB_NAME = "Pybricks Hub"
 # UnityとのOSCデータのやり取り設定
 accept = False
 message = ""
+add = None
 
 def printdata(address: str, *osc_arguments: List[str]):
     print(address + "  " + str(osc_arguments[0]))
@@ -55,6 +56,8 @@ def move_mortor(address: str, *osc_arguments: List[Any]):
         port = b"E"
     elif address == "/motorF":
         port = b"F"
+    elif address == "/motorAll":
+        port = b"X"
     else:
         pass
     
@@ -66,22 +69,15 @@ def move_mortor(address: str, *osc_arguments: List[Any]):
     else:
         accept = True
         port, cmd, spd = unpack('!c3sf',message)
-        #print(port,cmd,spd)
+        print(port,cmd,spd)
 
-def controll_Hub():
-    #まだ使わないのであとで書く
-    pass
 
 def disconnect():
-    global accept
-    global message
-    message = pack('!c3sf',b"A",b"bye","00")
-    accept = True
-    print(unpack('!c3sf',message))
+    sys.exit()
 
 
 dispatcher = dispatcher.Dispatcher()
-dispatcher.map("/pythonosc", printdata) #確認用
+dispatcher.map("/*", printdata) #確認用
 dispatcher.map("/motor*", move_mortor) #/motor(任意のポートA~F)アドレス宛のOSCメッセージを受け取ったらモーター動かす
 dispatcher.map("/exit", disconnect)
     
@@ -94,30 +90,42 @@ async def communicate_hub():
         print("Hub was disconnected.")
         if not main_task.done():
             sys.exit()
-            
-
+            main_task.cancel()
+    
+    ready_event = asyncio.Event()
     
     async def handle_rx(_, data: bytearray):
+        global add
         if data[0] == 0x01:
             payload = data[1:]
 
             if b'The program was stopped' in payload:
                 sys.exit()
-            if len(payload) == 16: #カラーセンサ
+            elif payload == b"rdy":
+                ready_event.set()
+
+            else:
                 try:
-                    add, value = unpack("!10p6p",payload)
-                    value = value.strip(b"\x00").decode('utf-8')
-                except (ValueError,Exception) as e:
-                        print(e)
-                else:pass
-            else: #モーターの角度
-                try:
+                    #角度
                     add, value = unpack("!10pf",payload)
-                except (ValueError,Exception) as e:
-                        print(e)
+                except:
+                    try:
+                        #カラーセンサ
+                        add, value = unpack("!10p6s",payload)
+                        value = value.strip(b"\x00").decode('utf-8')
+                        
+                    except (ValueError,Exception) as e:
+                        #print(e)
+                        pass
+                    else:pass
+                if add is not None: 
+                    try:
+                        add = "/" + add.strip(b"\x00").decode('utf-8')
+                        oscclient.send_message(add,value)
+                        print(add,value)
+                    except:pass
                 else:pass
-            add = "/" + add.strip(b"\x00").decode('utf-8')
-            oscclient.send_message(add,value)
+                
                 
 
     print("searching...")
@@ -135,7 +143,7 @@ async def communicate_hub():
                 if accept:
                     await client.write_gatt_char(
                         PYBRICKS_COMMAND_EVENT_CHAR_UUID,
-                        b"\x06" + data,  # 多分ACK(0x06 肯定応答)なるもの
+                        b"\x06" + data,  # prepend "write stdin" command (0x06)
                         response=True
                     )
                     accept = False
@@ -145,9 +153,11 @@ async def communicate_hub():
 
         print("Start the program on the hub now with the button.")
         await client.start_notify(PYBRICKS_COMMAND_EVENT_CHAR_UUID, handle_rx)
+        print(":)")
         while True:
             try:
                 await send(message)
+                print(message)
                 await asyncio.sleep(0.02)
 
             except Exception as e:
@@ -157,12 +167,13 @@ async def communicate_hub():
 
 async def main():
     server = AsyncIOOSCUDPServer((args.ip, args.port), dispatcher, asyncio.get_event_loop())
-    transport, protocol = await server.create_serve_endpoint()
+    transport, protocol = await server.create_serve_endpoint()  # Create datagram endpoint and start serving
     
     await communicate_hub()
 
     transport.close()
 
 
-
-asyncio.run(main())
+# Run the main async program.
+if __name__ == '__main__':
+    asyncio.run(main())
